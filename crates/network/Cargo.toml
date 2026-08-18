@@ -1,0 +1,12 @@
+[package]
+name = "litedroid-network"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+litedroid-devices = { path = "../devices" }
+nix.workspace = true
+tracing.workspace = true
+libc.workspace = true
+parking_lot.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "litedroid-devices"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+tracing.workspace = true
+parking_lot.workspace = true

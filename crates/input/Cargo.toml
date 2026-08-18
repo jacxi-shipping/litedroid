@@ -1,0 +1,9 @@
+[package]
+name = "litedroid-input"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+tracing.workspace = true
+crossbeam-channel.workspace = true

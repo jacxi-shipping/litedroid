@@ -1,0 +1,21 @@
+[package]
+name = "litedroid-gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "litedroid-gui"
+path = "src/main.rs"
+
+[dependencies]
+litedroid-core.workspace = true
+litedroid-config.workspace = true
+litedroid-diagnostics.workspace = true
+litedroid-ipc.workspace = true
+litedroid-logging.workspace = true
+litedroid-graphics.workspace = true
+litedroid-input.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+serde_json.workspace = true
+eframe = "0.29"

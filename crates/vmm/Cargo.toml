@@ -1,0 +1,13 @@
+[package]
+name = "litedroid-vmm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+litedroid-kvm = { path = "../kvm" }
+litedroid-memory = { path = "../memory" }
+kvm-bindings.workspace = true
+kvm-ioctls.workspace = true
+nix.workspace = true
+tracing.workspace = true

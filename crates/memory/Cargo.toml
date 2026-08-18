@@ -1,0 +1,10 @@
+[package]
+name = "litedroid-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+nix.workspace = true
+tracing.workspace = true
+libc.workspace = true

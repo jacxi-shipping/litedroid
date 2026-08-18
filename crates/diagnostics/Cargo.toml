@@ -1,0 +1,11 @@
+[package]
+name = "litedroid-diagnostics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+tracing.workspace = true
+libc.workspace = true
+dirs.workspace = true
+serde.workspace = true

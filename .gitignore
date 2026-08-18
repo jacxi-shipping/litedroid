@@ -1,0 +1,17 @@
+# Rust build output
+target/
+
+# Downloaded Android SDK/system images and emulator binaries
+system-images/
+emulator/
+
+# Local runtime and generated data
+.temp/
+snapshots/
+*.log
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

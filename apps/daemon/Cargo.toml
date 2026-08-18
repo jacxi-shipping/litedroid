@@ -1,0 +1,22 @@
+[package]
+name = "litedroid-daemon"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "litedroid-daemon"
+path = "src/main.rs"
+
+[dependencies]
+litedroid-core.workspace = true
+litedroid-config.workspace = true
+litedroid-ipc.workspace = true
+litedroid-vmm.workspace = true
+litedroid-logging.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+parking_lot.workspace = true
+nix.workspace = true
+libc.workspace = true
+clap.workspace = true

@@ -1,0 +1,8 @@
+[package]
+name = "litedroid-graphics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+tracing.workspace = true

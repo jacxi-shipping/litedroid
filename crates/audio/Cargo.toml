@@ -1,0 +1,10 @@
+[package]
+name = "litedroid-audio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+litedroid-devices = { path = "../devices" }
+tracing.workspace = true
+parking_lot.workspace = true

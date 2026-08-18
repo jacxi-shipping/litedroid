@@ -1,0 +1,12 @@
+[package]
+name = "litedroid-kvm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+litedroid-core = { path = "../core" }
+kvm-ioctls.workspace = true
+kvm-bindings.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+libc.workspace = true
