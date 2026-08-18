@@ -244,6 +244,21 @@ impl Vm {
         })
     }
 
+    /// Create the standard x86 PIC/IOAPIC interrupt controller.
+    pub fn create_irq_chip(&self) -> Result<()> {
+        self.vm.create_irq_chip().map_err(|e| {
+            LiteDroidError::KvmIoctl(format!("KVM_CREATE_IRQCHIP failed: {}", e))
+        })
+    }
+
+    /// Create the standard x86 programmable interval timer.
+    pub fn create_pit(&self) -> Result<()> {
+        let config = unsafe { std::mem::zeroed::<kvm_bindings::kvm_pit_config>() };
+        self.vm.create_pit2(config).map_err(|e| {
+            LiteDroidError::KvmIoctl(format!("KVM_CREATE_PIT2 failed: {}", e))
+        })
+    }
+
     /// Set the Task-State Segment address (x86 only).
     pub fn set_tss_addr(&self, addr: usize) -> Result<()> {
         self.vm.set_tss_address(addr).map_err(|e| {
@@ -318,6 +333,7 @@ pub enum VcpuExitInfo {
         size: u8,
         data: Vec<u8>,
     },
+    Exception,
     Shutdown,
     FailEntry {
         hardware_entry_failure_reason: u64,
@@ -417,6 +433,7 @@ impl Vcpu {
                 size: data.len() as u8,
                 data: data.to_vec(),
             },
+            VcpuExit::Exception => VcpuExitInfo::Exception,
             VcpuExit::Shutdown => VcpuExitInfo::Shutdown,
             VcpuExit::FailEntry(reason, _cpu) => VcpuExitInfo::FailEntry {
                 hardware_entry_failure_reason: reason,

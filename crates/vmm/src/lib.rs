@@ -78,6 +78,11 @@ impl VirtualMachine {
         let hypervisor = Hypervisor::new()?;
         let vm = hypervisor.create_vm()?;
 
+        // Android's Linux kernel expects the conventional x86 interrupt
+        // controller to exist before it initializes its interrupt tables.
+        vm.create_irq_chip()?;
+        vm.create_pit()?;
+
         // --- x86 one-time setup ---
         vm.set_tss_addr(0xfffb_d000)?;
         vm.set_identity_map_addr(0xfffbc000)?;
@@ -136,19 +141,24 @@ impl VirtualMachine {
             ))
         })?;
         if data.len() >= 0x206 && &data[0x202..0x206] == b"HdrS" {
+            let setup_sects = data[0x1f1] as usize;
+            let setup_size = (setup_sects + 1).checked_mul(512).ok_or_else(|| {
+                LiteDroidError::KernelLoadFailed("bzImage setup size overflowed".to_string())
+            })?;
             let payload_offset = read_u32(&data, 0x248)? as usize;
             let payload_length = read_u32(&data, 0x24c)? as usize;
-            let payload_end = payload_offset.checked_add(payload_length).ok_or_else(|| {
-                LiteDroidError::KernelLoadFailed("bzImage payload range overflowed".to_string())
-            })?;
-            if payload_offset < 0x200 || payload_end > data.len() {
+            let payload_end = data.len();
+            if setup_size < 0x200 || payload_offset < 0x200 || setup_size >= payload_end {
                 return Err(LiteDroidError::KernelLoadFailed(format!(
-                    "invalid bzImage payload range: offset={payload_offset:#x}, length={payload_length:#x}"
+                    "invalid bzImage payload range: setup={setup_size:#x}, header offset={payload_offset:#x}, length={payload_length:#x}"
                 )));
             }
-            info!("Loading bzImage payload: file offset={:#x}, file size={:#x}, load addr={:#x}", payload_offset, payload_length, KERNEL_LOAD_ADDR);
+            // The setup sectors contain the real-mode boot protocol data and
+            // the protected-mode entry begins immediately after them.
+            self.guest_memory.load_blob(0x10000, &data[..setup_size])?;
+            info!("Loading bzImage protected payload: file offset={:#x}, file size={:#x} (header length {:#x}), load addr={:#x}", setup_size, payload_end - setup_size, payload_length, KERNEL_LOAD_ADDR);
             self.guest_memory
-                .load_blob(KERNEL_LOAD_ADDR, &data[payload_offset..payload_end])?;
+                .load_blob(KERNEL_LOAD_ADDR, &data[setup_size..payload_end])?;
             // Verify kernel was loaded correctly
             let mut verify_buf = [0u8; 16];
             self.guest_memory.read_guest(KERNEL_LOAD_ADDR, &mut verify_buf).ok();
@@ -228,17 +238,24 @@ impl VirtualMachine {
         }
         boot_params[0x1f1..0x290].copy_from_slice(&self.bzimage_header);
 
-        // Set up command line in the boot parameters area.
-        // The decompressor will read from this location.
+        // Place the command line in its own buffer. The zero-page field at
+        // 0x228 is a pointer, not inline command-line storage.
         let cmdline = self.config.kernel_cmdline.as_bytes();
         if cmdline.len() + 1 > 0x800 {
             return Err(LiteDroidError::KernelLoadFailed(
                 "kernel command line exceeds boot parameter space".to_string(),
             ));
         }
-        // Command line in boot params area (offset 0x228 in zero page)
-        boot_params[0x228..0x228 + cmdline.len()].copy_from_slice(cmdline);
-        boot_params[0x228 + cmdline.len()] = 0; // null terminate
+        let mut cmdline_data = vec![0u8; cmdline.len() + 1];
+        cmdline_data[..cmdline.len()].copy_from_slice(cmdline);
+        self.guest_memory.load_blob(CMDLINE_ADDR, &cmdline_data)?;
+        write_u32(&mut boot_params, 0x228, CMDLINE_ADDR as u32);
+        write_u32(&mut boot_params, 0x238, cmdline.len() as u32);
+
+        // Linux boot protocol fields for the initramfs.
+        write_u32(&mut boot_params, 0x218, INITRAMFS_LOAD_ADDR as u32);
+        write_u32(&mut boot_params, 0x21c, self.initramfs_size as u32);
+        write_u16(&mut boot_params, 0x224, 0x7fff); // heap end, in 16-byte units
         
         // Set boot loader fields
         boot_params[0x210] = 0xff; // type_of_loader: custom loader
@@ -281,23 +298,23 @@ impl VirtualMachine {
     }
     /// The bzImage decompressor requires 32-bit protected mode, not 64-bit long mode.
     fn setup_gdt_32bit(&self) -> Result<()> {
-        // GDT with null, code, and data descriptors for 32-bit mode
-        let mut gdt = [0u8; 24];
+        // Linux expects code selector 0x10 and data selector 0x18 on entry.
+        let mut gdt = [0u8; 32];
         
         // Entry 0: Null descriptor
         // (already zeros)
         
-        // Entry 1 at offset 0x08: Code segment - 32-bit execute/read
-        // Base=0, Limit=0xFFFFFFFF, Flags=0x9b (P=1, DPL=0, S=1, Type=0xb)
+        // Entry 2 at offset 0x10: Code segment - 32-bit execute/read
+        // Base=0, Limit=0xFFFFFFFF, Flags=0x9a (P=1, DPL=0, S=1, Type=0xa)
         // DB=1 (32-bit), G=1 (4KB granularity)
-        let code_seg: u64 = 0x00cf9b00_ffffffff;
-        gdt[0x08..0x10].copy_from_slice(&code_seg.to_le_bytes());
+        let code_seg: u64 = 0x00cf9a00_0000ffff;
+        gdt[0x10..0x18].copy_from_slice(&code_seg.to_le_bytes());
         
-        // Entry 2 at offset 0x10: Data segment - read/write  
-        // Base=0, Limit=0xFFFFFFFF, Flags=0x93 (P=1, DPL=0, S=1, Type=0x3)
+        // Entry 3 at offset 0x18: Data segment - read/write
+        // Base=0, Limit=0xFFFFFFFF, Flags=0x92 (P=1, DPL=0, S=1, Type=0x2)
         // DB=1 (32-bit), G=1 (4KB granularity)
-        let data_seg: u64 = 0x00cf9300_ffffffff;
-        gdt[0x10..0x18].copy_from_slice(&data_seg.to_le_bytes());
+        let data_seg: u64 = 0x00cf9200_0000ffff;
+        gdt[0x18..0x20].copy_from_slice(&data_seg.to_le_bytes());
         
         self.guest_memory.load_blob(GDT_ADDR, &gdt)?;
         info!("32-bit GDT set up at {:#x}: code={:#x} data={:#x}", GDT_ADDR, code_seg, data_seg);
@@ -310,14 +327,14 @@ impl VirtualMachine {
         
         // Set GDT
         sregs.gdt.base = GDT_ADDR;
-        sregs.gdt.limit = 23; // 3 entries × 8 - 1
+        sregs.gdt.limit = 31; // 4 entries × 8 - 1
         
-        // Set code segment (selector 0x08) for 32-bit protected mode
+        // Set code segment (selector 0x10) for 32-bit protected mode
         sregs.cs = kvm_bindings::kvm_segment {
-            selector: 0x08,
+            selector: 0x10,
             base: 0,
             limit: 0xffffffff,
-            type_: 0xb, // code, readable, accessed
+            type_: 0xa, // code, readable
             present: 1,
             dpl: 0,
             db: 1, // 32-bit
@@ -328,12 +345,12 @@ impl VirtualMachine {
             ..unsafe { std::mem::zeroed() }
         };
         
-        // Set data segment (selector 0x10) for 32-bit protected mode
+        // Set data segment (selector 0x18) for 32-bit protected mode
         sregs.ds = kvm_bindings::kvm_segment {
-            selector: 0x10,
+            selector: 0x18,
             base: 0,
             limit: 0xffffffff,
-            type_: 0x3, // data, writable, accessed
+            type_: 0x2, // data, writable
             present: 1,
             dpl: 0,
             db: 1, // 32-bit
@@ -526,6 +543,20 @@ impl VirtualMachine {
                             "MMIO write: addr={:#x}, size={}, data={:?}",
                             addr, size, data
                         );
+                    }
+                    VcpuExitInfo::Exception => {
+                        let regs = vcpu.get_regs().unwrap_or_default();
+                        let sregs = vcpu.get_sregs().ok();
+                        error!(
+                            "Guest exception at RIP={:#x}: RAX={:#x} RSI={:#x} RSP={:#x}, CS={:#x}, DS={:#x}",
+                            regs.rip,
+                            regs.rax,
+                            regs.rsi,
+                            regs.rsp,
+                            sregs.as_ref().map(|value| value.cs.selector).unwrap_or_default(),
+                            sregs.as_ref().map(|value| value.ds.selector).unwrap_or_default(),
+                        );
+                        self.running.store(false, Ordering::SeqCst);
                     }
                     VcpuExitInfo::FailEntry {
                         hardware_entry_failure_reason,
