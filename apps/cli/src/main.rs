@@ -28,6 +28,7 @@ enum Cli {
         fast: bool,
     },
     Stop,
+    Wipe,
     Restart,
     Pause,
     Resume,
@@ -145,6 +146,7 @@ fn main() {
         Cli::Device { action } => cmd_device(action),
         Cli::Start { device, cold, fast } => cmd_start(device, cold, fast),
         Cli::Stop => cmd_stop(),
+        Cli::Wipe => cmd_wipe(),
         Cli::Restart => cmd_restart(),
         Cli::Pause => cmd_pause(),
         Cli::Resume => cmd_resume(),
@@ -357,6 +359,12 @@ fn cmd_start(device: String, cold: bool, fast: bool) -> i32 {
 }
 fn cmd_stop() -> i32 {
     match ipc("device.stop", json!({})) {
+        Some(r) => print_resp(&r),
+        None => 1,
+    }
+}
+fn cmd_wipe() -> i32 {
+    match ipc("device.wipe", json!({})) {
         Some(r) => print_resp(&r),
         None => 1,
     }

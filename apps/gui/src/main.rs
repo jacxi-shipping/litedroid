@@ -280,8 +280,36 @@ impl eframe::App for LiteDroidApp {
                         self.status_message = "Android VM stop requested".to_string();
                     }
                 }
+                if ui
+                    .add_enabled(self.daemon_online, egui::Button::new("Restart"))
+                    .clicked()
+                {
+                    if self.ipc_call("device.restart", serde_json::json!({})).is_some() {
+                        self.status_message = "Restarting Android emulator".to_string();
+                    }
+                }
+                if ui
+                    .add_enabled(self.daemon_online, egui::Button::new("Wipe data"))
+                    .clicked()
+                {
+                    if self.ipc_call("device.wipe", serde_json::json!({})).is_some() {
+                        self.status_message = "Resetting Android device data".to_string();
+                    }
+                }
                 if ui.button("Run diagnostics").clicked() {
                     self.run_diagnostics();
+                }
+                if ui
+                    .add_enabled(self.daemon_online, egui::Button::new("Capture screenshot"))
+                    .clicked()
+                {
+                    if let Some(result) = self.ipc_call("device.screenshot", serde_json::json!({})) {
+                        self.status_message = result
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .map(|path| format!("Screenshot saved: {path}"))
+                            .unwrap_or_else(|| "Screenshot captured".to_string());
+                    }
                 }
             });
             ui.separator();

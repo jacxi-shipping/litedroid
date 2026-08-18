@@ -82,65 +82,10 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
                 }
                 st.emulator = None;
             }
-            let config = match LiteDroidConfig::load() {
-                Ok(config) => config,
-                Err(error) => return make_err(&format!("Cannot load configuration: {error}")),
-            };
-            let vm_config = match config.device_config(device_name) {
-                Ok(config) => config,
-                Err(_) if device_name == "default" => match config.ensure_default_device() {
-                    Ok(config) => config,
-                    Err(error) => {
-                        return make_err(&format!("Cannot create default device: {error}"))
-                    }
-                },
-                Err(error) => {
-                    return make_err(&format!("Cannot load device {device_name}: {error}"))
-                }
-            };
-            if let Err(error) = config.ensure_android_images(vm_config.api_level) {
-                return make_err(&format!("Android images are unavailable: {error}"));
+            match launch_device(&mut st, device_name, false) {
+                Ok(result) => make_ok(result),
+                Err(error) => make_err(&error),
             }
-            let tools = match android_emulator(&config) {
-                Ok(tools) => tools,
-                Err(error) => return make_err(&error),
-            };
-            let avd_name = format!("LiteDroid-API{}", vm_config.api_level);
-            let emulator_log = config.data_dir().join("logs").join("android-emulator.log");
-            let log_file = match std::fs::File::create(&emulator_log) {
-                Ok(file) => file,
-                Err(error) => return make_err(&format!("Cannot create emulator log: {error}")),
-            };
-            let log_copy = match log_file.try_clone() {
-                Ok(file) => file,
-                Err(error) => return make_err(&format!("Cannot prepare emulator log: {error}")),
-            };
-            let child = match Command::new(tools.emulator)
-                .args([
-                    "-avd",
-                    &avd_name,
-                    "-port",
-                    "5554",
-                    "-gpu",
-                    "swiftshader_indirect",
-                    "-no-snapshot",
-                    "-no-metrics",
-                ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(log_copy))
-                .stderr(Stdio::from(log_file))
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(error) => return make_err(&format!("Cannot start Android emulator: {error}")),
-            };
-            st.active_device = Some(device_name.to_string());
-            st.power_state = "booting".to_string();
-            st.emulator = Some(child);
-            st.adb = Some(tools.adb);
-            make_ok(
-                json!({"device": device_name, "status": "booting", "avd": avd_name, "log": emulator_log}),
-            )
         }
         "device.stop" => {
             if let Some(mut emulator) = st.emulator.take() {
@@ -155,15 +100,62 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
             st.power_state = "off".to_string();
             make_ok(json!({"status": "stopped"}))
         }
-        "device.restart" => make_err("VM not running"),
+        "device.restart" => {
+            let device_name = st.active_device.clone().unwrap_or_else(|| "default".to_string());
+            stop_emulator(&mut st);
+            match launch_device(&mut st, &device_name, false) {
+                Ok(result) => make_ok(result),
+                Err(error) => make_err(&error),
+            }
+        }
+        "device.wipe" => {
+            let device_name = st.active_device.clone().unwrap_or_else(|| "default".to_string());
+            stop_emulator(&mut st);
+            match launch_device(&mut st, &device_name, true) {
+                Ok(result) => make_ok(result),
+                Err(error) => make_err(&error),
+            }
+        }
         "device.pause" => make_err("Pause is not implemented for the active VM"),
         "device.resume" => make_err("Resume is not implemented for the active VM"),
         "device.status" => make_ok(json!({
             "power_state": emulator_state(&mut st),
             "device": st.active_device,
         })),
-        "device.launch" => make_err("Device not running"),
-        "device.screenshot" => make_err("Device not running"),
+        "device.launch" => {
+            let package = match req.params.get("package").and_then(|value| value.as_str()) {
+                Some(package) => package,
+                None => return make_err("A package name is required"),
+            };
+            match adb_output(&mut st, ["shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"]) {
+                Ok(output) => make_ok(json!({"package": package, "output": output})),
+                Err(error) => make_err(&error),
+            }
+        }
+        "device.screenshot" => {
+            let path = req
+                .params
+                .get("path")
+                .and_then(|value| value.as_str())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    LiteDroidConfig::load()
+                        .map(|config| config.data_dir().join("screenshots").join("device.png"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from("device.png"))
+                });
+            if let Some(parent) = path.parent() {
+                if let Err(error) = std::fs::create_dir_all(parent) {
+                    return make_err(&format!("Cannot create screenshot directory: {error}"));
+                }
+            }
+            match adb_bytes(&mut st, ["exec-out", "screencap", "-p"]) {
+                Ok(bytes) => match std::fs::write(&path, bytes) {
+                    Ok(()) => make_ok(json!({"path": path})),
+                    Err(error) => make_err(&format!("Cannot save screenshot: {error}")),
+                },
+                Err(error) => make_err(&error),
+            }
+        }
         "vm.stats" => make_ok(json!({
             "cpu": {"host_percent": 0.0, "vcpu_percent": [], "guest_time_ms": 0},
             "memory": {"allocated_mb": 0, "used_mb": 0, "host_rss_mb": 0},
@@ -171,12 +163,39 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
             "network": {"rx_bytes_per_sec": 0, "tx_bytes_per_sec": 0, "guest_ip": null},
             "uptime_secs": 0,
         })),
-        "apk.install" => make_err("ADB bridge not yet connected"),
-        "apk.uninstall" => make_err("ADB bridge not yet connected"),
-        "apk.list" => make_err("ADB bridge not yet connected"),
-        "adb.shell" => make_err("ADB not yet connected"),
-        "adb.install" => make_err("ADB not yet connected"),
-        "adb.logcat" => make_err("ADB not yet connected"),
+        "apk.install" | "adb.install" => {
+            let path = match req.params.get("path").and_then(|value| value.as_str()) {
+                Some(path) if std::path::Path::new(path).is_file() => path,
+                Some(path) => return make_err(&format!("APK not found: {path}")),
+                None => return make_err("An APK path is required"),
+            };
+            match adb_output(&mut st, ["install", "-r", path]) {
+                Ok(output) => make_ok(json!({"output": output})),
+                Err(error) => make_err(&error),
+            }
+        }
+        "apk.uninstall" => {
+            let package = match req.params.get("package").and_then(|value| value.as_str()) {
+                Some(package) => package,
+                None => return make_err("A package name is required"),
+            };
+            match adb_output(&mut st, ["uninstall", package]) {
+                Ok(output) => make_ok(json!({"output": output})),
+                Err(error) => make_err(&error),
+            }
+        }
+        "apk.list" => match adb_output(&mut st, ["shell", "pm", "list", "packages", "-3"]) {
+            Ok(output) => make_ok(json!({"packages": output.lines().collect::<Vec<_>>() })),
+            Err(error) => make_err(&error),
+        },
+        "adb.shell" => match adb_output(&mut st, ["shell"]) {
+            Ok(output) => make_ok(json!({"output": output})),
+            Err(error) => make_err(&error),
+        },
+        "adb.logcat" => match adb_output(&mut st, ["logcat", "-d", "-t", "200"]) {
+            Ok(output) => make_ok(json!({"output": output})),
+            Err(error) => make_err(&error),
+        },
         "snapshot.create" => make_err("No active VM"),
         "snapshot.restore" => make_err("No active VM"),
         "snapshot.list" => make_err("No active VM"),
@@ -185,9 +204,113 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
     }
 }
 
+fn stop_emulator(state: &mut DaemonState) {
+    if let Some(mut emulator) = state.emulator.take() {
+        let _ = emulator.kill();
+        let _ = emulator.wait();
+    }
+    state.adb = None;
+    state.active_device = None;
+    state.power_state = "off".to_string();
+}
+
+fn launch_device(
+    state: &mut DaemonState,
+    device_name: &str,
+    wipe_data: bool,
+) -> std::result::Result<serde_json::Value, String> {
+    let config = LiteDroidConfig::load().map_err(|error| format!("Cannot load configuration: {error}"))?;
+    let device = match config.device_config(device_name) {
+        Ok(config) => config,
+        Err(_) if device_name == "default" => config
+            .ensure_default_device()
+            .map_err(|error| format!("Cannot create default device: {error}"))?,
+        Err(error) => return Err(format!("Cannot load device {device_name}: {error}")),
+    };
+    config
+        .ensure_android_images(device.api_level)
+        .map_err(|error| format!("Android images are unavailable: {error}"))?;
+    let tools = android_emulator(&config)?;
+    let avd_name = format!("LiteDroid-API{}", device.api_level);
+    let emulator_log = config.data_dir().join("logs").join("android-emulator.log");
+    let log_file = std::fs::File::create(&emulator_log)
+        .map_err(|error| format!("Cannot create emulator log: {error}"))?;
+    let log_copy = log_file
+        .try_clone()
+        .map_err(|error| format!("Cannot prepare emulator log: {error}"))?;
+    let mut command = Command::new(&tools.emulator);
+    command
+        .args([
+            "-avd",
+            &avd_name,
+            "-port",
+            "5554",
+            "-gpu",
+            "swiftshader_indirect",
+            "-no-snapshot",
+            "-no-metrics",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_copy))
+        .stderr(Stdio::from(log_file));
+    if wipe_data {
+        command.arg("-wipe-data");
+    }
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Cannot start Android emulator: {error}"))?;
+    state.active_device = Some(device_name.to_string());
+    state.power_state = "booting".to_string();
+    state.emulator = Some(child);
+    state.adb = Some(tools.adb);
+    Ok(json!({
+        "device": device_name,
+        "status": "booting",
+        "avd": avd_name,
+        "log": emulator_log,
+        "wipe_data": wipe_data,
+    }))
+}
+
 struct AndroidTools {
     emulator: std::path::PathBuf,
     adb: std::path::PathBuf,
+}
+
+fn adb_bytes<I, S>(state: &mut DaemonState, args: I) -> std::result::Result<Vec<u8>, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    if emulator_state(state) != "running" {
+        return Err("Android is still booting; wait until device status is running".to_string());
+    }
+    let adb = state
+        .adb
+        .as_ref()
+        .ok_or_else(|| "ADB is unavailable because no device is running".to_string())?;
+    let output = Command::new(adb)
+        .arg("-s")
+        .arg("emulator-5554")
+        .args(args)
+        .output()
+        .map_err(|error| format!("Cannot run ADB: {error}"))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(format!(
+            "ADB command failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+fn adb_output<I, S>(state: &mut DaemonState, args: I) -> std::result::Result<String, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    adb_bytes(state, args).map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
 fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<AndroidTools, String> {
