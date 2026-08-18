@@ -142,9 +142,7 @@ impl AdbMessage {
     /// Decode a message from wire format.
     pub fn decode(data: &[u8]) -> Result<Self> {
         if data.len() < ADB_HEADER_SIZE {
-            return Err(LiteDroidError::AdbProtocolError(
-                "message too short".into(),
-            ));
+            return Err(LiteDroidError::AdbProtocolError("message too short".into()));
         }
 
         let command: [u8; 4] = data[0..4]
@@ -158,9 +156,7 @@ impl AdbMessage {
 
         let expected_magic = u32::from_le_bytes(command) ^ 0xFFFF_FFFF;
         if magic != expected_magic {
-            return Err(LiteDroidError::AdbProtocolError(
-                "invalid magic".into(),
-            ));
+            return Err(LiteDroidError::AdbProtocolError("invalid magic".into()));
         }
 
         let total = ADB_HEADER_SIZE + data_length as usize;
@@ -173,9 +169,7 @@ impl AdbMessage {
         let payload = data[ADB_HEADER_SIZE..total].to_vec();
         let computed = checksum(&payload);
         if computed != data_check {
-            return Err(LiteDroidError::AdbProtocolError(
-                "checksum mismatch".into(),
-            ));
+            return Err(LiteDroidError::AdbProtocolError("checksum mismatch".into()));
         }
 
         Ok(Self {
@@ -251,11 +245,7 @@ impl AdbConnection {
                         send_msg(&mut stream, &AdbMessage::okay(local_id, remote_id));
                         send_msg(
                             &mut stream,
-                            &AdbMessage::write_msg(
-                                local_id,
-                                remote_id,
-                                b"LITEDROID001\tdevice",
-                            ),
+                            &AdbMessage::write_msg(local_id, remote_id, b"LITEDROID001\tdevice"),
                         );
                     } else if dest == "host:kill" {
                         send_msg(&mut stream, &AdbMessage::close(local_id, remote_id));
@@ -268,7 +258,7 @@ impl AdbConnection {
                     send_msg(
                         &mut stream,
                         &AdbMessage::connect("device::litedroid", ADB_MAX_PAYLOAD),
-                            );
+                    );
                 }
                 b"OKAY" | b"WRTE" => {
                     #[allow(unused)]
@@ -328,25 +318,23 @@ impl AdbServer {
         self.running.store(true, Ordering::SeqCst);
         let running = self.running.clone();
 
-        Ok(std::thread::spawn(move || {
-            loop {
-                if !running.load(Ordering::SeqCst) {
-                    break;
+        Ok(std::thread::spawn(move || loop {
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
+            match listener.accept() {
+                Ok((stream, addr)) => {
+                    info!(%addr, "ADB client connected");
+                    if let Err(e) = AdbConnection::handle_client(stream) {
+                        error!(%addr, err = %e, "ADB connection error");
+                    }
                 }
-                match listener.accept() {
-                    Ok((stream, addr)) => {
-                        info!(%addr, "ADB client connected");
-                        if let Err(e) = AdbConnection::handle_client(stream) {
-                            error!(%addr, err = %e, "ADB connection error");
-                        }
+                Err(e) => {
+                    if !running.load(Ordering::SeqCst) {
+                        break;
                     }
-                    Err(e) => {
-                        if !running.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        warn!(err = %e, "ADB accept error");
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
+                    warn!(err = %e, "ADB accept error");
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
             }
         }))

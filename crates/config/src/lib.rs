@@ -1,12 +1,13 @@
 use std::fs;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use litedroid_core::{
-    DAEMON_SOCKET_PATH, DEFAULT_CONFIG_DIR, DEFAULT_DATA_DIR, DeviceConfig, LiteDroidError, Result,
+    DeviceConfig, LiteDroidError, Result, DAEMON_SOCKET_PATH, DEFAULT_CONFIG_DIR, DEFAULT_DATA_DIR,
 };
 
 /// Expand a leading `~` to the user's home directory.
@@ -69,8 +70,8 @@ impl LiteDroidConfig {
         }
 
         let content = fs::read_to_string(&path)?;
-        let config: LiteDroidConfig = toml::from_str(&content)
-            .map_err(|e| LiteDroidError::ConfigError(e.to_string()))?;
+        let config: LiteDroidConfig =
+            toml::from_str(&content).map_err(|e| LiteDroidError::ConfigError(e.to_string()))?;
 
         config.ensure_layout()?;
         info!(path = %full_path, "loaded configuration");
@@ -98,8 +99,8 @@ impl LiteDroidConfig {
         fs::create_dir_all(&dir)?;
 
         let full_path = dir.join("config.toml");
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| LiteDroidError::ConfigError(e.to_string()))?;
+        let content =
+            toml::to_string_pretty(self).map_err(|e| LiteDroidError::ConfigError(e.to_string()))?;
 
         let mut file = fs::File::create(&full_path)?;
         file.write_all(content.as_bytes())?;
@@ -146,4 +147,192 @@ impl LiteDroidConfig {
         config.system_image_path = self.images_dir().join("system.img");
         config
     }
+
+    /// Load a persisted device profile and resolve its shared image paths.
+    pub fn device_config(&self, name: &str) -> Result<DeviceConfig> {
+        let metadata_path = self.devices_dir().join(name).join("metadata.json");
+        let metadata = fs::read_to_string(&metadata_path)
+            .map_err(|_| LiteDroidError::DeviceNotFound(name.to_string()))?;
+        let metadata: serde_json::Value = serde_json::from_str(&metadata)
+            .map_err(|error| LiteDroidError::ConfigError(error.to_string()))?;
+        let mut config = self.default_device_config();
+        config.name = metadata
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(name)
+            .to_string();
+        if let Some(value) = metadata
+            .get("vcpu_count")
+            .and_then(serde_json::Value::as_u64)
+        {
+            config.vcpu_count = value as u32;
+        }
+        if let Some(value) = metadata.get("ram_mb").and_then(serde_json::Value::as_u64) {
+            config.ram_mb = value;
+        }
+        if let Some(value) = metadata
+            .get("android_version")
+            .and_then(serde_json::Value::as_str)
+        {
+            config.android_version = value.to_string();
+        }
+        if let Some(value) = metadata
+            .get("api_level")
+            .and_then(serde_json::Value::as_u64)
+        {
+            config.api_level = value as u32;
+        }
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Download and install the official Android SDK system image required by LiteDroid.
+    pub fn ensure_android_images(&self, api_level: u32) -> Result<()> {
+        let images_dir = self.images_dir();
+        fs::create_dir_all(&images_dir)?;
+        if images_are_ready(&images_dir) {
+            return Ok(());
+        }
+
+        let sdk_root = sdk_root(self).ok_or_else(|| {
+            LiteDroidError::ConfigError(
+                "Android SDK not found. Set ANDROID_HOME/ANDROID_SDK_ROOT or install command-line tools."
+                    .to_string(),
+            )
+        })?;
+        let sdkmanager = find_sdkmanager(&sdk_root).ok_or_else(|| {
+            LiteDroidError::ConfigError(format!(
+                "sdkmanager not found under {}. Install Android SDK command-line tools.",
+                sdk_root.display()
+            ))
+        })?;
+        let package = format!("system-images;android-{api_level};default;x86_64");
+
+        info!(%package, "installing Android SDK system image");
+        let mut licenses = Command::new(&sdkmanager)
+            .arg("--sdk_root")
+            .arg(&sdk_root)
+            .arg("--licenses")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| LiteDroidError::ConfigError(format!("starting sdkmanager: {e}")))?;
+        if let Some(mut stdin) = licenses.stdin.take() {
+            stdin.write_all(b"y\ny\ny\ny\ny\n")?;
+        }
+        if !licenses.wait()?.success() {
+            return Err(LiteDroidError::ConfigError(
+                "Android SDK licenses were not accepted".to_string(),
+            ));
+        }
+
+        let install = Command::new(&sdkmanager)
+            .arg("--sdk_root")
+            .arg(&sdk_root)
+            .arg(&package)
+            .output()?;
+        if !install.status.success() {
+            return Err(LiteDroidError::ConfigError(format!(
+                "sdkmanager could not install {package}: {}",
+                String::from_utf8_lossy(&install.stderr).trim()
+            )));
+        }
+
+        let package_dir = sdk_root
+            .join("system-images")
+            .join(format!("android-{api_level}"))
+            .join("default")
+            .join("x86_64");
+        copy_image(
+            &package_dir,
+            &["kernel-ranchu", "kernel"],
+            &images_dir.join("kernel"),
+        )?;
+        copy_image(
+            &package_dir,
+            &["ramdisk.img"],
+            &images_dir.join("ramdisk.img"),
+        )?;
+        copy_image(
+            &package_dir,
+            &["system.img"],
+            &images_dir.join("system.img"),
+        )?;
+        Ok(())
+    }
+}
+
+fn is_non_empty(path: &Path) -> bool {
+    path.is_file() && fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false)
+}
+
+fn images_are_ready(images_dir: &Path) -> bool {
+    let kernel = images_dir.join("kernel");
+    let ramdisk = images_dir.join("ramdisk.img");
+    let system = images_dir.join("system.img");
+    is_non_empty(&kernel)
+        && fs::read(&kernel)
+            .map(|data| data.iter().any(|byte| *byte != 0))
+            .unwrap_or(false)
+        && is_non_empty(&ramdisk)
+        && fs::read(&ramdisk)
+            .map(|data| data.starts_with(&[0x1f, 0x8b]) || data.starts_with(b"070701"))
+            .unwrap_or(false)
+        && is_non_empty(&system)
+        && fs::File::open(&system)
+            .and_then(|mut file| {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut header = [0u8; 4];
+                file.read_exact(&mut header)?;
+                if header == [0x3a, 0xff, 0x26, 0xed] {
+                    return Ok(true);
+                }
+                file.seek(SeekFrom::Start(0x438))?;
+                let mut magic = [0u8; 2];
+                file.read_exact(&mut magic)?;
+                Ok(magic == [0x53, 0xef])
+            })
+            .unwrap_or(false)
+}
+
+fn sdk_root(config: &LiteDroidConfig) -> Option<PathBuf> {
+    std::env::var_os("ANDROID_SDK_ROOT")
+        .or_else(|| std::env::var_os("ANDROID_HOME"))
+        .map(PathBuf::from)
+        .or_else(|| Some(config.data_dir().join("android-sdk")).filter(|p| p.exists()))
+}
+
+fn find_sdkmanager(sdk_root: &Path) -> Option<PathBuf> {
+    let candidates = [
+        sdk_root.join("cmdline-tools/latest/bin/sdkmanager"),
+        sdk_root.join("cmdline-tools/bin/sdkmanager"),
+        sdk_root.join("tools/bin/sdkmanager"),
+    ];
+    candidates.into_iter().find(|p| p.is_file()).or_else(|| {
+        Command::new("sdkmanager")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()
+            .filter(|status| status.success())
+            .map(|_| PathBuf::from("sdkmanager"))
+    })
+}
+
+fn copy_image(package_dir: &Path, names: &[&str], destination: &Path) -> Result<()> {
+    let source = names
+        .iter()
+        .map(|name| package_dir.join(name))
+        .find(|path| is_non_empty(path))
+        .ok_or_else(|| {
+            LiteDroidError::ConfigError(format!(
+                "Android SDK package is missing {} in {}",
+                names.join(" or "),
+                package_dir.display()
+            ))
+        })?;
+    fs::copy(source, destination)?;
+    Ok(())
 }

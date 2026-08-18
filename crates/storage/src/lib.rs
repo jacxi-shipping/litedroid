@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use libc::{
-    c_int, c_void, close, fstat, ftruncate, fsync, open, pread, pwrite, size_t, stat, off_t,
+    c_int, c_void, close, fstat, fsync, ftruncate, off_t, open, pread, pwrite, size_t, stat,
     O_CLOEXEC, O_CREAT, O_RDWR,
 };
 use litedroid_core::{LiteDroidError, Result};
@@ -26,18 +26,10 @@ pub struct RawDiskImage {
 impl RawDiskImage {
     /// Create a new disk image at `path` with the given size in bytes.
     pub fn create(path: &Path, size_bytes: u64) -> Result<Self> {
-        let path_cstr =
-            std::ffi::CString::new(path.to_string_lossy().as_ref()).map_err(|e| {
-                LiteDroidError::DiskIo(format!("invalid path for disk image: {e}"))
-            })?;
+        let path_cstr = std::ffi::CString::new(path.to_string_lossy().as_ref())
+            .map_err(|e| LiteDroidError::DiskIo(format!("invalid path for disk image: {e}")))?;
 
-        let fd = unsafe {
-            open(
-                path_cstr.as_ptr(),
-                O_CREAT | O_RDWR | O_CLOEXEC,
-                0o644,
-            )
-        };
+        let fd = unsafe { open(path_cstr.as_ptr(), O_CREAT | O_RDWR | O_CLOEXEC, 0o644) };
 
         if fd < 0 {
             return Err(LiteDroidError::DiskIo(format!(
@@ -57,15 +49,16 @@ impl RawDiskImage {
         }
 
         debug!(path = %path.display(), size_bytes, "created disk image");
-        Ok(Self { fd, size: size_bytes })
+        Ok(Self {
+            fd,
+            size: size_bytes,
+        })
     }
 
     /// Open an existing disk image for reading and writing.
     pub fn open(path: &Path) -> Result<Self> {
-        let path_cstr =
-            std::ffi::CString::new(path.to_string_lossy().as_ref()).map_err(|e| {
-                LiteDroidError::DiskIo(format!("invalid path for disk image: {e}"))
-            })?;
+        let path_cstr = std::ffi::CString::new(path.to_string_lossy().as_ref())
+            .map_err(|e| LiteDroidError::DiskIo(format!("invalid path for disk image: {e}")))?;
 
         let fd = unsafe { open(path_cstr.as_ptr(), O_RDWR | O_CLOEXEC) };
 

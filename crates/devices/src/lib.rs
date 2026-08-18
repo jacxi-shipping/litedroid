@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use tracing::{debug, warn};
 
 use litedroid_core::{
-    LiteDroidError, Result, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_START, MAX_VIRTIO_DEVICES,
+    LiteDroidError, Result, MAX_VIRTIO_DEVICES, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_START,
 };
 
 const VIRTIO_MAGIC: u32 = 0x7472_6976; // "virt"
@@ -84,7 +84,10 @@ impl VirtioBus {
         if let Some(device) = devices.get_mut(index) {
             device.mmio_write(reg_offset, size, value);
         } else {
-            debug!(address = format!("{:#x}", address), "no device at address for write");
+            debug!(
+                address = format!("{:#x}", address),
+                "no device at address for write"
+            );
         }
     }
 
@@ -199,10 +202,7 @@ pub struct VirtioRngDevice {
 impl VirtioRngDevice {
     pub fn new() -> std::io::Result<Self> {
         let urandom = File::open("/dev/urandom")?;
-        Ok(Self {
-            status: 0,
-            urandom,
-        })
+        Ok(Self { status: 0, urandom })
     }
 }
 

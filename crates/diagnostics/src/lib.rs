@@ -23,9 +23,9 @@ pub enum DiagnosticStatus {
 impl std::fmt::Display for DiagnosticStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DiagnosticStatus::Ok => write!(f, "\u{2713}"),      // ✓
-            DiagnosticStatus::Warn => write!(f, "\u{26a0}"),    // ⚠
-            DiagnosticStatus::Error => write!(f, "\u{2717}"),   // ✗
+            DiagnosticStatus::Ok => write!(f, "\u{2713}"),    // ✓
+            DiagnosticStatus::Warn => write!(f, "\u{26a0}"),  // ⚠
+            DiagnosticStatus::Error => write!(f, "\u{2717}"), // ✗
         }
     }
 }
@@ -365,9 +365,7 @@ fn check_adb_in_path() -> DiagnosticResult {
     match Command::new("which").arg("adb").output() {
         Ok(output) => {
             if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string();
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 DiagnosticResult {
                     name: "ADB in PATH".into(),
                     status: DiagnosticStatus::Ok,

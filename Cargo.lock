@@ -1969,6 +1969,7 @@ dependencies = [
  "dirs",
  "litedroid-core",
  "serde",
+ "serde_json",
  "toml",
  "tracing",
 ]
@@ -2138,6 +2139,7 @@ dependencies = [
  "litedroid-core",
  "litedroid-kvm",
  "litedroid-memory",
+ "litedroid-storage",
  "nix",
  "tracing",
 ]

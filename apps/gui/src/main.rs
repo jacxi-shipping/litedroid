@@ -59,7 +59,9 @@ impl LiteDroidApp {
         match client.send_request(method, params) {
             Ok(response) if response.success => response.result,
             Ok(response) => {
-                self.status_message = response.error.unwrap_or_else(|| "Request failed".to_string());
+                self.status_message = response
+                    .error
+                    .unwrap_or_else(|| "Request failed".to_string());
                 None
             }
             Err(error) => {
@@ -75,18 +77,37 @@ impl LiteDroidApp {
         if let Ok(entries) = std::fs::read_dir(config.devices_dir()) {
             for entry in entries.flatten() {
                 let metadata_path = entry.path().join("metadata.json");
-                let Ok(content) = std::fs::read_to_string(metadata_path) else { continue };
-                let Ok(metadata) = serde_json::from_str::<Value>(&content) else { continue };
+                let Ok(content) = std::fs::read_to_string(metadata_path) else {
+                    continue;
+                };
+                let Ok(metadata) = serde_json::from_str::<Value>(&content) else {
+                    continue;
+                };
                 self.devices.push(DeviceRow {
-                    name: metadata.get("name").and_then(Value::as_str).unwrap_or("Unknown").to_string(),
-                    android_version: metadata.get("android_version").and_then(Value::as_str).unwrap_or("?").to_string(),
+                    name: metadata
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Unknown")
+                        .to_string(),
+                    android_version: metadata
+                        .get("android_version")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string(),
                     ram_mb: metadata.get("ram_mb").and_then(Value::as_u64).unwrap_or(0),
-                    vcpu_count: metadata.get("vcpu_count").and_then(Value::as_u64).unwrap_or(0),
+                    vcpu_count: metadata
+                        .get("vcpu_count")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
                 });
             }
         }
         if let Some(status) = self.ipc_call("device.status", serde_json::json!({})) {
-            self.power_state = status.get("power_state").and_then(Value::as_str).unwrap_or("unknown").to_string();
+            self.power_state = status
+                .get("power_state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
         }
         self.last_refresh = Instant::now();
     }
@@ -112,7 +133,10 @@ impl LiteDroidApp {
             "vcpu_count": device.vcpu_count,
         });
         match std::fs::create_dir_all(&directory).and_then(|_| {
-            std::fs::write(directory.join("metadata.json"), serde_json::to_string_pretty(&metadata).unwrap())
+            std::fs::write(
+                directory.join("metadata.json"),
+                serde_json::to_string_pretty(&metadata).unwrap(),
+            )
         }) {
             Ok(()) => {
                 self.status_message = format!("Created {name}");
@@ -135,31 +159,45 @@ impl eframe::App for LiteDroidApp {
                 ui.heading("LiteDroid");
                 ui.label("Android virtualization control panel");
                 ui.separator();
-                let (text, color) = if self.daemon_online { ("Daemon online", egui::Color32::from_rgb(85, 190, 120)) } else { ("Daemon offline", egui::Color32::from_rgb(220, 120, 90)) };
+                let (text, color) = if self.daemon_online {
+                    ("Daemon online", egui::Color32::from_rgb(85, 190, 120))
+                } else {
+                    ("Daemon offline", egui::Color32::from_rgb(220, 120, 90))
+                };
                 ui.colored_label(color, text);
                 ui.separator();
                 ui.small(format!("Renderer: {}", self.rendering_mode));
             });
         });
 
-        egui::SidePanel::left("devices").resizable(true).default_width(245.0).show(ctx, |ui| {
-            ui.heading("Devices");
-            ui.add_space(6.0);
-            if self.devices.is_empty() {
-                ui.weak("No device profiles found.");
-            }
-            for device in &self.devices {
-                let selected = self.selected_device == device.name;
-                if ui.selectable_label(selected, &device.name).clicked() {
-                    self.selected_device = device.name.clone();
+        egui::SidePanel::left("devices")
+            .resizable(true)
+            .default_width(245.0)
+            .show(ctx, |ui| {
+                ui.heading("Devices");
+                ui.add_space(6.0);
+                if self.devices.is_empty() {
+                    ui.weak("No device profiles found.");
                 }
-                ui.small(format!("Android {}  |  {} MB  |  {} vCPU", device.android_version, device.ram_mb, device.vcpu_count));
-                ui.add_space(5.0);
-            }
-            ui.separator();
-            if ui.button("Refresh devices").clicked() { self.refresh(); }
-            if ui.button("Create device profile").clicked() { self.create_device(); }
-        });
+                for device in &self.devices {
+                    let selected = self.selected_device == device.name;
+                    if ui.selectable_label(selected, &device.name).clicked() {
+                        self.selected_device = device.name.clone();
+                    }
+                    ui.small(format!(
+                        "Android {}  |  {} MB  |  {} vCPU",
+                        device.android_version, device.ram_mb, device.vcpu_count
+                    ));
+                    ui.add_space(5.0);
+                }
+                ui.separator();
+                if ui.button("Refresh devices").clicked() {
+                    self.refresh();
+                }
+                if ui.button("Create device profile").clicked() {
+                    self.create_device();
+                }
+            });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(format!("{} device", self.selected_device));
@@ -170,17 +208,34 @@ impl eframe::App for LiteDroidApp {
             });
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.daemon_online, egui::Button::new("Start device")).clicked() {
-                    if self.ipc_call("device.start", serde_json::json!({"device": self.selected_device.clone()})).is_some() {
+                if ui
+                    .add_enabled(self.daemon_online, egui::Button::new("Start device"))
+                    .clicked()
+                {
+                    if self
+                        .ipc_call(
+                            "device.start",
+                            serde_json::json!({"device": self.selected_device.clone()}),
+                        )
+                        .is_some()
+                    {
                         self.status_message = "Android VM start requested".to_string();
                     }
                 }
-                if ui.add_enabled(self.daemon_online, egui::Button::new("Stop device")).clicked() {
-                    if self.ipc_call("device.stop", serde_json::json!({})).is_some() {
+                if ui
+                    .add_enabled(self.daemon_online, egui::Button::new("Stop device"))
+                    .clicked()
+                {
+                    if self
+                        .ipc_call("device.stop", serde_json::json!({}))
+                        .is_some()
+                    {
                         self.status_message = "Android VM stop requested".to_string();
                     }
                 }
-                if ui.button("Run diagnostics").clicked() { self.run_diagnostics(); }
+                if ui.button("Run diagnostics").clicked() {
+                    self.run_diagnostics();
+                }
             });
             ui.separator();
             ui.heading("VM metrics");
@@ -189,14 +244,20 @@ impl eframe::App for LiteDroidApp {
                     self.stats = serde_json::to_string_pretty(&stats).unwrap_or_default();
                 }
             }
-            egui::ScrollArea::vertical().max_height(170.0).show(ui, |ui| {
-                ui.monospace(&self.stats);
-            });
+            egui::ScrollArea::vertical()
+                .max_height(170.0)
+                .show(ui, |ui| {
+                    ui.monospace(&self.stats);
+                });
             ui.separator();
             ui.heading("Diagnostics");
             egui::ScrollArea::vertical().show(ui, |ui| {
-                if self.diagnostics.is_empty() { ui.weak("Run diagnostics to inspect this host."); }
-                for result in &self.diagnostics { ui.label(result); }
+                if self.diagnostics.is_empty() {
+                    ui.weak("Run diagnostics to inspect this host.");
+                }
+                for result in &self.diagnostics {
+                    ui.label(result);
+                }
             });
         });
 

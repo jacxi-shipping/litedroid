@@ -60,9 +60,16 @@ impl GuestMemory {
 
         let ptr = NonNull::new(ptr).expect("mmap returned non-null on success");
 
-        debug!("GuestMemory allocated: {} bytes at {:p}", size_bytes, ptr.as_ptr());
+        debug!(
+            "GuestMemory allocated: {} bytes at {:p}",
+            size_bytes,
+            ptr.as_ptr()
+        );
 
-        Ok(Self { ptr, size: size_bytes })
+        Ok(Self {
+            ptr,
+            size: size_bytes,
+        })
     }
 
     /// Copy `buf.len()` bytes **from** guest physical address `addr` into the
@@ -72,9 +79,9 @@ impl GuestMemory {
     /// Returns [`LiteDroidError::GuestAddressOutOfRange`] when the range
     /// `[addr, addr + buf.len())` is not fully contained in the allocation.
     pub fn read_guest(&self, addr: u64, buf: &mut [u8]) -> Result<()> {
-        let end = addr.checked_add(buf.len() as u64).ok_or_else(|| {
-            LiteDroidError::GuestAddressOutOfRange { address: addr }
-        })?;
+        let end = addr
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| LiteDroidError::GuestAddressOutOfRange { address: addr })?;
         if end > self.size {
             return Err(LiteDroidError::GuestAddressOutOfRange { address: addr });
         }
@@ -95,9 +102,9 @@ impl GuestMemory {
     /// Returns [`LiteDroidError::GuestAddressOutOfRange`] when the range
     /// `[addr, addr + data.len())` is not fully contained in the allocation.
     pub fn write_guest(&self, addr: u64, data: &[u8]) -> Result<()> {
-        let end = addr.checked_add(data.len() as u64).ok_or_else(|| {
-            LiteDroidError::GuestAddressOutOfRange { address: addr }
-        })?;
+        let end = addr
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| LiteDroidError::GuestAddressOutOfRange { address: addr })?;
         if end > self.size {
             return Err(LiteDroidError::GuestAddressOutOfRange { address: addr });
         }
@@ -143,9 +150,7 @@ impl Drop for GuestMemory {
         );
         // SAFETY: `self.ptr` and `self.size` were obtained from a successful
         // `mmap` call and have not been modified since.
-        let ret = unsafe {
-            munmap(self.ptr.as_ptr(), self.size as usize)
-        };
+        let ret = unsafe { munmap(self.ptr.as_ptr(), self.size as usize) };
         if ret != 0 {
             tracing::error!("munmap failed for guest memory region");
         }

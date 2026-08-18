@@ -2,7 +2,9 @@ use std::ffi::CString;
 use std::io;
 use std::process::Command;
 
-use libc::{c_int, c_void, close, ioctl, open, read, sockaddr_in, write, AF_INET, IFNAMSIZ, O_RDWR};
+use libc::{
+    c_int, c_void, close, ioctl, open, read, sockaddr_in, write, AF_INET, IFNAMSIZ, O_RDWR,
+};
 use litedroid_core::{LiteDroidError, Result};
 use litedroid_devices::VirtDevice;
 use parking_lot::Mutex;
@@ -52,7 +54,11 @@ impl IfReq {
     }
 
     fn get_name(&self) -> String {
-        let end = self.name.iter().position(|&b| b == 0).unwrap_or(self.name.len());
+        let end = self
+            .name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.name.len());
         String::from_utf8_lossy(&self.name[..end]).into_owned()
     }
 
@@ -65,7 +71,11 @@ impl IfReq {
     fn set_sockaddr_in(&mut self, sa: &libc::sockaddr_in) {
         let src = sa as *const libc::sockaddr_in as *const u8;
         unsafe {
-            std::ptr::copy_nonoverlapping(src, self.data.as_mut_ptr(), std::mem::size_of::<libc::sockaddr_in>());
+            std::ptr::copy_nonoverlapping(
+                src,
+                self.data.as_mut_ptr(),
+                std::mem::size_of::<libc::sockaddr_in>(),
+            );
         }
     }
 }
@@ -107,7 +117,10 @@ impl TapInterface {
 
         let actual_name = ifr.get_name();
         debug!(name = %actual_name, "created TAP interface");
-        Ok(Self { fd, name: actual_name })
+        Ok(Self {
+            fd,
+            name: actual_name,
+        })
     }
 
     /// The name assigned to this interface by the kernel.
@@ -369,7 +382,8 @@ impl NatManager {
         }
 
         *self.tap_name.lock() = Some(tap_name.to_string());
-        self.is_setup.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.is_setup
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         info!(tap = tap_name, host = %host_iface, "NAT rules installed");
         Ok(Self {
             tap_name: Mutex::new(Some(tap_name.to_string())),
@@ -379,7 +393,10 @@ impl NatManager {
 
     /// Remove the iptables rules that were added by [`setup`](Self::setup).
     pub fn teardown(&self) -> Result<()> {
-        if !self.is_setup.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        if !self
+            .is_setup
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
             return Ok(());
         }
         let tap = {
@@ -393,8 +410,16 @@ impl NatManager {
 
         let _ = Command::new("iptables")
             .args([
-                "-t", "nat", "-D", "POSTROUTING", "-o", &host_iface,
-                "-s", "10.0.2.0/24", "-j", "MASQUERADE",
+                "-t",
+                "nat",
+                "-D",
+                "POSTROUTING",
+                "-o",
+                &host_iface,
+                "-s",
+                "10.0.2.0/24",
+                "-j",
+                "MASQUERADE",
             ])
             .status();
         let _ = Command::new("iptables")

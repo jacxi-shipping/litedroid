@@ -143,15 +143,19 @@ impl InputManager {
     // -- Touch ---------------------------------------------------------------
 
     pub fn inject_touch_start(&self, tracking_id: u32, x: i32, y: i32) {
-        let _ = self
-            .tx
-            .try_send(InputEvent::TouchStart { slot: tracking_id, x, y });
+        let _ = self.tx.try_send(InputEvent::TouchStart {
+            slot: tracking_id,
+            x,
+            y,
+        });
     }
 
     pub fn inject_touch_move(&self, tracking_id: u32, x: i32, y: i32) {
-        let _ = self
-            .tx
-            .try_send(InputEvent::TouchMove { slot: tracking_id, x, y });
+        let _ = self.tx.try_send(InputEvent::TouchMove {
+            slot: tracking_id,
+            x,
+            y,
+        });
     }
 
     pub fn inject_touch_end(&self, tracking_id: u32) {

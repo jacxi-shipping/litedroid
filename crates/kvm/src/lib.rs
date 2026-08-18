@@ -167,10 +167,7 @@ impl Hypervisor {
 
         let capabilities = KvmCapabilities::new(&kvm);
 
-        info!(
-            "KVM opened (API version {})",
-            kvm.get_api_version()
-        );
+        info!("KVM opened (API version {})", kvm.get_api_version());
 
         Ok(Self { kvm, capabilities })
     }
@@ -231,12 +228,13 @@ pub struct Vm {
 impl Vm {
     /// Create a new virtual CPU for this VM.
     pub fn create_vcpu(&self, index: u32) -> Result<Vcpu> {
-        let vcpu_fd = self.vm.create_vcpu(index as u64).map_err(|e| {
-            LiteDroidError::VcpuCreationFailed {
-                cpu_index: index,
-                reason: format!("kvm create_vcpu({}) failed: {}", index, e),
-            }
-        })?;
+        let vcpu_fd =
+            self.vm
+                .create_vcpu(index as u64)
+                .map_err(|e| LiteDroidError::VcpuCreationFailed {
+                    cpu_index: index,
+                    reason: format!("kvm create_vcpu({}) failed: {}", index, e),
+                })?;
         debug!("Created vCPU {}", index);
         Ok(Vcpu {
             vcpu: vcpu_fd,
@@ -246,17 +244,17 @@ impl Vm {
 
     /// Create the standard x86 PIC/IOAPIC interrupt controller.
     pub fn create_irq_chip(&self) -> Result<()> {
-        self.vm.create_irq_chip().map_err(|e| {
-            LiteDroidError::KvmIoctl(format!("KVM_CREATE_IRQCHIP failed: {}", e))
-        })
+        self.vm
+            .create_irq_chip()
+            .map_err(|e| LiteDroidError::KvmIoctl(format!("KVM_CREATE_IRQCHIP failed: {}", e)))
     }
 
     /// Create the standard x86 programmable interval timer.
     pub fn create_pit(&self) -> Result<()> {
         let config = unsafe { std::mem::zeroed::<kvm_bindings::kvm_pit_config>() };
-        self.vm.create_pit2(config).map_err(|e| {
-            LiteDroidError::KvmIoctl(format!("KVM_CREATE_PIT2 failed: {}", e))
-        })
+        self.vm
+            .create_pit2(config)
+            .map_err(|e| LiteDroidError::KvmIoctl(format!("KVM_CREATE_PIT2 failed: {}", e)))
     }
 
     /// Set the Task-State Segment address (x86 only).
@@ -317,27 +315,13 @@ impl Vm {
 #[derive(Debug, Clone)]
 pub enum VcpuExitInfo {
     Hlt,
-    IoOut {
-        port: u16,
-        data: Vec<u8>,
-    },
-    IoIn {
-        port: u16,
-    },
-    MmioRead {
-        addr: u64,
-        size: u8,
-    },
-    MmioWrite {
-        addr: u64,
-        size: u8,
-        data: Vec<u8>,
-    },
+    IoOut { port: u16, data: Vec<u8> },
+    IoIn { port: u16 },
+    MmioRead { addr: u64, size: u8 },
+    MmioWrite { addr: u64, size: u8, data: Vec<u8> },
     Exception,
     Shutdown,
-    FailEntry {
-        hardware_entry_failure_reason: u64,
-    },
+    FailEntry { hardware_entry_failure_reason: u64 },
     InternalError,
     Unknown,
 }
@@ -360,61 +344,67 @@ impl Vcpu {
 
     /// Read general-purpose registers.
     pub fn get_regs(&self) -> Result<kvm_bindings::kvm_regs> {
-        self.vcpu.get_regs().map_err(|e| {
-            LiteDroidError::VcpuRunFailed {
+        self.vcpu
+            .get_regs()
+            .map_err(|e| LiteDroidError::VcpuRunFailed {
                 cpu_index: self.index,
                 reason: format!("GET_REGS failed: {}", e),
-            }
-        })
+            })
     }
 
     /// Write general-purpose registers.
     pub fn set_regs(&self, regs: &kvm_bindings::kvm_regs) -> Result<()> {
-        self.vcpu.set_regs(regs).map_err(|e| {
-            LiteDroidError::VcpuRunFailed {
+        self.vcpu
+            .set_regs(regs)
+            .map_err(|e| LiteDroidError::VcpuRunFailed {
                 cpu_index: self.index,
                 reason: format!("SET_REGS failed: {}", e),
-            }
-        })
+            })
     }
 
     /// Read special / system registers.
     pub fn get_sregs(&self) -> Result<kvm_bindings::kvm_sregs> {
-        self.vcpu.get_sregs().map_err(|e| {
-            LiteDroidError::VcpuRunFailed {
+        self.vcpu
+            .get_sregs()
+            .map_err(|e| LiteDroidError::VcpuRunFailed {
                 cpu_index: self.index,
                 reason: format!("GET_SREGS failed: {}", e),
-            }
-        })
+            })
     }
 
     /// Write special / system registers.
     pub fn set_sregs(&self, sregs: &kvm_bindings::kvm_sregs) -> Result<()> {
-        self.vcpu.set_sregs(sregs).map_err(|e| {
-            LiteDroidError::VcpuRunFailed {
+        self.vcpu
+            .set_sregs(sregs)
+            .map_err(|e| LiteDroidError::VcpuRunFailed {
                 cpu_index: self.index,
                 reason: format!("SET_SREGS failed: {}", e),
-            }
-        })
+            })
     }
 
     /// Program the CPUID leaves for this vCPU.
     pub fn set_cpuid(&self, cpuid: &CpuId) -> Result<()> {
-        self.vcpu.set_cpuid2(cpuid).map_err(|e| {
-            LiteDroidError::VcpuRunFailed {
+        self.vcpu
+            .set_cpuid2(cpuid)
+            .map_err(|e| LiteDroidError::VcpuRunFailed {
                 cpu_index: self.index,
                 reason: format!("SET_CPUID failed: {}", e),
-            }
-        })
+            })
     }
 
     /// Run the vCPU until it exits. Returns an owned summary of the exit reason.
     pub fn run(&mut self) -> Result<VcpuExitInfo> {
-        let exit = self.vcpu.run().map_err(|e| {
-            LiteDroidError::VcpuRunFailed {
-                cpu_index: self.index,
-                reason: format!("KVM_RUN failed: {}", e),
-            }
+        self.run_with_mmio(|_, _| {})
+    }
+
+    /// Run the vCPU and complete MMIO reads before returning to the caller.
+    pub fn run_with_mmio<F>(&mut self, mut mmio_read: F) -> Result<VcpuExitInfo>
+    where
+        F: FnMut(u64, &mut [u8]),
+    {
+        let exit = self.vcpu.run().map_err(|e| LiteDroidError::VcpuRunFailed {
+            cpu_index: self.index,
+            reason: format!("KVM_RUN failed: {}", e),
         })?;
 
         Ok(match exit {
@@ -424,10 +414,13 @@ impl Vcpu {
                 data: data.to_vec(),
             },
             VcpuExit::IoIn(port, _data) => VcpuExitInfo::IoIn { port },
-            VcpuExit::MmioRead(addr, data) => VcpuExitInfo::MmioRead {
-                addr,
-                size: data.len() as u8,
-            },
+            VcpuExit::MmioRead(addr, data) => {
+                mmio_read(addr, data);
+                VcpuExitInfo::MmioRead {
+                    addr,
+                    size: data.len() as u8,
+                }
+            }
             VcpuExit::MmioWrite(addr, data) => VcpuExitInfo::MmioWrite {
                 addr,
                 size: data.len() as u8,

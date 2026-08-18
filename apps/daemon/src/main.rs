@@ -1,8 +1,8 @@
 //! LiteDroid Daemon — manages VM lifecycle via IPC
 
 use clap::Parser;
-use litedroid_core::*;
 use litedroid_config::LiteDroidConfig;
+use litedroid_core::*;
 use litedroid_ipc::{IpcRequest, IpcResponse, IpcServer, IpcStream};
 use parking_lot::Mutex;
 use serde_json::json;
@@ -61,7 +61,11 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
             make_ok(json!({"shutting_down": true}))
         }
         "device.start" => {
-            let device_name = req.params.get("device").and_then(|v| v.as_str()).unwrap_or("default");
+            let device_name = req
+                .params
+                .get("device")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default");
             if st.stop_handle.is_some() {
                 return make_err("VM is already running");
             }
@@ -69,21 +73,54 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
                 Ok(config) => config,
                 Err(error) => return make_err(&format!("Cannot load configuration: {error}")),
             };
-            let vm_config = config.default_device_config();
-            if !vm_config.kernel_path.is_file() {
-                return make_err(&format!("Kernel image not found: {}", vm_config.kernel_path.display()));
+            let vm_config = match config.device_config(device_name) {
+                Ok(config) => config,
+                Err(error) => {
+                    return make_err(&format!("Cannot load device {device_name}: {error}"))
+                }
+            };
+            if let Err(error) = config.ensure_android_images(vm_config.api_level) {
+                return make_err(&format!("Android images are unavailable: {error}"));
             }
-            if !vm_config.initramfs_path.is_file() {
-                return make_err(&format!("Initramfs image not found: {}", vm_config.initramfs_path.display()));
+            if !vm_config.kernel_path.is_file()
+                || std::fs::metadata(&vm_config.kernel_path)
+                    .map(|m| m.len() == 0)
+                    .unwrap_or(true)
+            {
+                return make_err(&format!(
+                    "Kernel image not found: {}",
+                    vm_config.kernel_path.display()
+                ));
             }
-            if !vm_config.system_image_path.is_file() {
-                return make_err(&format!("Android system image not found: {}", vm_config.system_image_path.display()));
+            if !vm_config.initramfs_path.is_file()
+                || std::fs::metadata(&vm_config.initramfs_path)
+                    .map(|m| m.len() == 0)
+                    .unwrap_or(true)
+            {
+                return make_err(&format!(
+                    "Initramfs image not found: {}",
+                    vm_config.initramfs_path.display()
+                ));
+            }
+            if !vm_config.system_image_path.is_file()
+                || std::fs::metadata(&vm_config.system_image_path)
+                    .map(|m| m.len() == 0)
+                    .unwrap_or(true)
+            {
+                return make_err(&format!(
+                    "Android system image not found: {}",
+                    vm_config.system_image_path.display()
+                ));
             }
             let mut vm = match litedroid_vmm::VirtualMachine::new(&vm_config) {
                 Ok(vm) => vm,
                 Err(error) => return make_err(&format!("VM creation failed: {error}")),
             };
-            if let Err(error) = vm.load_kernel(&vm_config.kernel_path).and_then(|_| vm.load_initramfs(&vm_config.initramfs_path)).and_then(|_| vm.setup_boot()) {
+            if let Err(error) = vm
+                .load_kernel(&vm_config.kernel_path)
+                .and_then(|_| vm.load_initramfs(&vm_config.initramfs_path))
+                .and_then(|_| vm.setup_boot())
+            {
                 return make_err(&format!("Guest boot setup failed: {error}"));
             }
             let stop_handle = vm.stop_handle();
@@ -93,7 +130,11 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
                 let mut state = thread_state.lock();
                 state.stop_handle = None;
                 state.active_device = None;
-                state.power_state = if result.is_ok() { "off".to_string() } else { "error".to_string() };
+                state.power_state = if result.is_ok() {
+                    "off".to_string()
+                } else {
+                    "error".to_string()
+                };
                 if let Err(error) = result {
                     tracing::error!("VM exited with error: {error}");
                 }
@@ -147,7 +188,11 @@ fn main() {
 
     // Initialize logging
     let cfg = LiteDroidConfig::load().ok();
-    let log_dir = cfg.as_ref().map(|c| c.data_dir()).unwrap_or_default().join("logs");
+    let log_dir = cfg
+        .as_ref()
+        .map(|c| c.data_dir())
+        .unwrap_or_default()
+        .join("logs");
     let _guard = match litedroid_logging::init("info", &log_dir) {
         Ok(g) => g,
         Err(e) => {

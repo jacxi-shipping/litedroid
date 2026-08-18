@@ -8,7 +8,7 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use litedroid_core::{IPC_PROTOCOL_VERSION, LiteDroidError, Result};
+use litedroid_core::{LiteDroidError, Result, IPC_PROTOCOL_VERSION};
 
 // ---------------------------------------------------------------------------
 // Wire protocol messages

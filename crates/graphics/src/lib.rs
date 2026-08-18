@@ -85,15 +85,7 @@ impl Framebuffer {
     ///
     /// `src_stride` is the number of bytes per row in `src`.
     /// The copy is clamped to the framebuffer bounds.
-    pub fn blit_from(
-        &mut self,
-        src: &[u8],
-        src_stride: u32,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-    ) {
+    pub fn blit_from(&mut self, src: &[u8], src_stride: u32, x: u32, y: u32, w: u32, h: u32) {
         let dst_stride = self.stride();
         for row in 0..h {
             let sy = y as usize + row as usize;
@@ -123,15 +115,7 @@ impl Framebuffer {
     /// Copy a rectangle from the framebuffer into `dst` at `(x, y)`.
     ///
     /// `dst_stride` is the number of bytes per row in `dst`.
-    pub fn blit_to(
-        &self,
-        dst: &mut [u8],
-        dst_stride: u32,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-    ) {
+    pub fn blit_to(&self, dst: &mut [u8], dst_stride: u32, x: u32, y: u32, w: u32, h: u32) {
         let src_stride = self.stride();
         for row in 0..h {
             let sy = y as usize + row as usize;

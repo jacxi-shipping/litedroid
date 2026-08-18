@@ -21,7 +21,10 @@ pub enum LiteDroidError {
     VcpuRunFailed { cpu_index: u32, reason: String },
 
     #[error("Memory allocation failed: requested {requested_mb}MB, available {available_mb}MB")]
-    MemoryAllocationFailed { requested_mb: u64, available_mb: u64 },
+    MemoryAllocationFailed {
+        requested_mb: u64,
+        available_mb: u64,
+    },
 
     #[error("Memory map failed: {0}")]
     MemoryMapFailed(String),

@@ -7,6 +7,7 @@ edition.workspace = true
 litedroid-core = { path = "../core" }
 litedroid-kvm = { path = "../kvm" }
 litedroid-memory = { path = "../memory" }
+litedroid-storage = { path = "../storage" }
 kvm-bindings.workspace = true
 kvm-ioctls.workspace = true
 nix.workspace = true
