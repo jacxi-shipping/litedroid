@@ -219,7 +219,7 @@ impl LiteDroidConfig {
             .spawn()
             .map_err(|e| LiteDroidError::ConfigError(format!("starting sdkmanager: {e}")))?;
         if let Some(mut stdin) = licenses.stdin.take() {
-            stdin.write_all(b"y\ny\ny\ny\ny\n")?;
+            stdin.write_all(&vec![b'y', b'\n'].repeat(64))?;
         }
         if !licenses.wait()?.success() {
             return Err(LiteDroidError::ConfigError(
@@ -276,9 +276,6 @@ fn images_are_ready(images_dir: &Path) -> bool {
             .map(|data| data.iter().any(|byte| *byte != 0))
             .unwrap_or(false)
         && is_non_empty(&ramdisk)
-        && fs::read(&ramdisk)
-            .map(|data| data.starts_with(&[0x1f, 0x8b]) || data.starts_with(b"070701"))
-            .unwrap_or(false)
         && is_non_empty(&system)
         && fs::File::open(&system)
             .and_then(|mut file| {
@@ -286,6 +283,12 @@ fn images_are_ready(images_dir: &Path) -> bool {
                 let mut header = [0u8; 4];
                 file.read_exact(&mut header)?;
                 if header == [0x3a, 0xff, 0x26, 0xed] {
+                    return Ok(true);
+                }
+                file.seek(SeekFrom::Start(0x200))?;
+                let mut gpt_magic = [0u8; 8];
+                file.read_exact(&mut gpt_magic)?;
+                if &gpt_magic == b"EFI PART" {
                     return Ok(true);
                 }
                 file.seek(SeekFrom::Start(0x438))?;
