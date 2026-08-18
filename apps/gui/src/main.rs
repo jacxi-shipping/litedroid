@@ -178,6 +178,9 @@ impl LiteDroidApp {
             "android_version": device.android_version,
             "ram_mb": device.ram_mb,
             "vcpu_count": device.vcpu_count,
+            "width": device.display.width,
+            "height": device.display.height,
+            "dpi": device.display.dpi,
         });
         match std::fs::create_dir_all(&directory).and_then(|_| {
             std::fs::write(

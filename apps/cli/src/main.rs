@@ -305,7 +305,10 @@ fn cmd_device(action: DeviceAction) -> i32 {
                 "system_image_path": lcfg.images_dir().join("system.img"),
                 "profile": format!("{:?}", cfg.profile),
                 "ram_mb": cfg.ram_mb,
-                "vcpu_count": cfg.vcpu_count
+                "vcpu_count": cfg.vcpu_count,
+                "width": cfg.display.width,
+                "height": cfg.display.height,
+                "dpi": cfg.display.dpi
             });
             match std::fs::write(
                 dir.join("metadata.json"),

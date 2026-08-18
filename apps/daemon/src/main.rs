@@ -230,8 +230,8 @@ fn launch_device(
     config
         .ensure_android_images(device.api_level)
         .map_err(|error| format!("Android images are unavailable: {error}"))?;
-    let tools = android_emulator(&config)?;
-    let avd_name = format!("LiteDroid-API{}", device.api_level);
+    let avd_name = avd_name(device_name, device.api_level);
+    let tools = android_emulator(&config, &device, &avd_name)?;
     let emulator_log = config.data_dir().join("logs").join("android-emulator.log");
     let log_file = std::fs::File::create(&emulator_log)
         .map_err(|error| format!("Cannot create emulator log: {error}"))?;
@@ -313,7 +313,19 @@ where
     adb_bytes(state, args).map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
-fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<AndroidTools, String> {
+fn avd_name(device_name: &str, api_level: u32) -> String {
+    let safe_name: String = device_name
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+        .collect();
+    format!("LiteDroid-{safe_name}-API{api_level}")
+}
+
+fn android_emulator(
+    config: &LiteDroidConfig,
+    device: &DeviceConfig,
+    avd_name: &str,
+) -> std::result::Result<AndroidTools, String> {
     let sdk_root = std::env::var_os("ANDROID_SDK_ROOT")
         .or_else(|| std::env::var_os("ANDROID_HOME"))
         .map(std::path::PathBuf::from)
@@ -331,7 +343,6 @@ fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<AndroidTool
             sdk_root.display()
         ));
     }
-    let avd_name = "LiteDroid-API34";
     let avd_dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".android")
@@ -346,7 +357,7 @@ fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<AndroidTool
                 "--name",
                 avd_name,
                 "--package",
-                "system-images;android-34;default;x86_64",
+                &format!("system-images;android-{};default;x86_64", device.api_level),
                 "--device",
                 "pixel_5",
             ])
@@ -370,7 +381,36 @@ fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<AndroidTool
             ));
         }
     }
+    configure_avd(&avd_dir, device)?;
     Ok(AndroidTools { emulator, adb })
+}
+
+fn configure_avd(avd_dir: &std::path::Path, device: &DeviceConfig) -> std::result::Result<(), String> {
+    let config_path = avd_dir.join("config.ini");
+    let existing = std::fs::read_to_string(&config_path)
+        .map_err(|error| format!("Cannot read AVD configuration: {error}"))?;
+    let managed_keys = [
+        "hw.cpu.ncore=",
+        "hw.ramSize=",
+        "hw.lcd.width=",
+        "hw.lcd.height=",
+        "hw.lcd.density=",
+    ];
+    let mut contents: String = existing
+        .lines()
+        .filter(|line| !managed_keys.iter().any(|key| line.starts_with(key)))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    contents.push_str(&format!(
+        "hw.cpu.ncore={}\nhw.ramSize={}\nhw.lcd.width={}\nhw.lcd.height={}\nhw.lcd.density={}\n",
+        device.vcpu_count,
+        device.ram_mb,
+        device.display.width,
+        device.display.height,
+        device.display.dpi,
+    ));
+    std::fs::write(config_path, contents)
+        .map_err(|error| format!("Cannot update AVD configuration: {error}"))
 }
 
 fn emulator_state(state: &mut DaemonState) -> String {

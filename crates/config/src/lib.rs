@@ -182,6 +182,15 @@ impl LiteDroidConfig {
         {
             config.api_level = value as u32;
         }
+        if let Some(value) = metadata.get("width").and_then(serde_json::Value::as_u64) {
+            config.display.width = value as u32;
+        }
+        if let Some(value) = metadata.get("height").and_then(serde_json::Value::as_u64) {
+            config.display.height = value as u32;
+        }
+        if let Some(value) = metadata.get("dpi").and_then(serde_json::Value::as_u64) {
+            config.display.dpi = value as u32;
+        }
         config.validate()?;
         Ok(config)
     }
@@ -203,6 +212,9 @@ impl LiteDroidConfig {
             "api_level": config.api_level,
             "ram_mb": config.ram_mb,
             "vcpu_count": config.vcpu_count,
+            "width": config.display.width,
+            "height": config.display.height,
+            "dpi": config.display.dpi,
         });
         fs::write(
             metadata_path,
