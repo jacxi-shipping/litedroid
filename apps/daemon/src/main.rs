@@ -24,6 +24,7 @@ struct DaemonState {
     power_state: String,
     stop_handle: Option<Arc<AtomicBool>>,
     emulator: Option<Child>,
+    adb: Option<std::path::PathBuf>,
 }
 
 fn handle_request(stream: &mut IpcStream, state: &Arc<Mutex<DaemonState>>, _pid: u32) {
@@ -60,7 +61,13 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
         "daemon.ping" => make_ok(json!({"pong": true, "pid": std::process::id()})),
         "daemon.status" => make_ok(json!({"running": true, "pid": std::process::id()})),
         "daemon.shutdown" => {
+            if let Some(mut emulator) = st.emulator.take() {
+                let _ = emulator.kill();
+                let _ = emulator.wait();
+            }
+            st.active_device = None;
             st.power_state = "stopping".to_string();
+            RUNNING.store(false, Ordering::SeqCst);
             make_ok(json!({"shutting_down": true}))
         }
         "device.start" => {
@@ -81,6 +88,12 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
             };
             let vm_config = match config.device_config(device_name) {
                 Ok(config) => config,
+                Err(_) if device_name == "default" => match config.ensure_default_device() {
+                    Ok(config) => config,
+                    Err(error) => {
+                        return make_err(&format!("Cannot create default device: {error}"))
+                    }
+                },
                 Err(error) => {
                     return make_err(&format!("Cannot load device {device_name}: {error}"))
                 }
@@ -88,22 +101,34 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
             if let Err(error) = config.ensure_android_images(vm_config.api_level) {
                 return make_err(&format!("Android images are unavailable: {error}"));
             }
-            let emulator = match android_emulator(&config) {
-                Ok(path) => path,
+            let tools = match android_emulator(&config) {
+                Ok(tools) => tools,
                 Err(error) => return make_err(&error),
             };
             let avd_name = format!("LiteDroid-API{}", vm_config.api_level);
-            let child = match Command::new(emulator)
+            let emulator_log = config.data_dir().join("logs").join("android-emulator.log");
+            let log_file = match std::fs::File::create(&emulator_log) {
+                Ok(file) => file,
+                Err(error) => return make_err(&format!("Cannot create emulator log: {error}")),
+            };
+            let log_copy = match log_file.try_clone() {
+                Ok(file) => file,
+                Err(error) => return make_err(&format!("Cannot prepare emulator log: {error}")),
+            };
+            let child = match Command::new(tools.emulator)
                 .args([
                     "-avd",
                     &avd_name,
+                    "-port",
+                    "5554",
                     "-gpu",
                     "swiftshader_indirect",
+                    "-no-snapshot",
                     "-no-metrics",
                 ])
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stdout(Stdio::from(log_copy))
+                .stderr(Stdio::from(log_file))
                 .spawn()
             {
                 Ok(child) => child,
@@ -112,13 +137,17 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
             st.active_device = Some(device_name.to_string());
             st.power_state = "booting".to_string();
             st.emulator = Some(child);
-            make_ok(json!({"device": device_name, "status": "booting", "avd": avd_name}))
+            st.adb = Some(tools.adb);
+            make_ok(
+                json!({"device": device_name, "status": "booting", "avd": avd_name, "log": emulator_log}),
+            )
         }
         "device.stop" => {
             if let Some(mut emulator) = st.emulator.take() {
                 let _ = emulator.kill();
                 let _ = emulator.wait();
             }
+            st.adb = None;
             if let Some(stop_handle) = st.stop_handle.take() {
                 stop_handle.store(false, Ordering::SeqCst);
             }
@@ -156,18 +185,24 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
     }
 }
 
-fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<std::path::PathBuf, String> {
+struct AndroidTools {
+    emulator: std::path::PathBuf,
+    adb: std::path::PathBuf,
+}
+
+fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<AndroidTools, String> {
     let sdk_root = std::env::var_os("ANDROID_SDK_ROOT")
         .or_else(|| std::env::var_os("ANDROID_HOME"))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| config.data_dir().join("android-sdk"));
     let emulator = sdk_root.join("emulator").join("emulator");
+    let adb = sdk_root.join("platform-tools").join("adb");
     let avdmanager = sdk_root
         .join("cmdline-tools")
         .join("latest")
         .join("bin")
         .join("avdmanager");
-    if !emulator.is_file() || !avdmanager.is_file() {
+    if !emulator.is_file() || !avdmanager.is_file() || !adb.is_file() {
         return Err(format!(
             "Android Emulator tools are not installed under {}. Run scripts/linux/setup.sh first.",
             sdk_root.display()
@@ -212,17 +247,32 @@ fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<std::path::
             ));
         }
     }
-    Ok(emulator)
+    Ok(AndroidTools { emulator, adb })
 }
 
 fn emulator_state(state: &mut DaemonState) -> String {
     if let Some(emulator) = state.emulator.as_mut() {
         match emulator.try_wait() {
             Ok(None) => {
-                state.power_state = "running".to_string();
+                let adb_state = state
+                    .adb
+                    .as_ref()
+                    .and_then(|adb| {
+                        Command::new(adb)
+                            .args(["-s", "emulator-5554", "get-state"])
+                            .output()
+                            .ok()
+                    })
+                    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+                state.power_state = if adb_state.as_deref() == Some("device") {
+                    "running".to_string()
+                } else {
+                    "booting".to_string()
+                };
             }
             Ok(Some(status)) => {
                 state.emulator = None;
+                state.adb = None;
                 state.active_device = None;
                 state.power_state = if status.success() {
                     "off".to_string()
@@ -301,7 +351,7 @@ fn main() {
     use std::os::unix::fs::PermissionsExt;
     if let Ok(meta) = std::fs::metadata(&socket_path) {
         let mut perms = meta.permissions();
-        perms.set_mode(0o666);
+        perms.set_mode(0o600);
         let _ = std::fs::set_permissions(&socket_path, perms);
     }
 
@@ -310,6 +360,7 @@ fn main() {
         power_state: "off".to_string(),
         stop_handle: None,
         emulator: None,
+        adb: None,
     }));
 
     // Accept loop

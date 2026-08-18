@@ -186,6 +186,32 @@ impl LiteDroidConfig {
         Ok(config)
     }
 
+    /// Create the default device profile on first use and return its configuration.
+    pub fn ensure_default_device(&self) -> Result<DeviceConfig> {
+        let directory = self.devices_dir().join("default");
+        let metadata_path = directory.join("metadata.json");
+        if metadata_path.is_file() {
+            return self.device_config("default");
+        }
+        let mut config = self.default_device_config();
+        config.name = "default".to_string();
+        fs::create_dir_all(&directory)?;
+        let metadata = serde_json::json!({
+            "name": config.name,
+            "id": config.id.to_string(),
+            "android_version": config.android_version,
+            "api_level": config.api_level,
+            "ram_mb": config.ram_mb,
+            "vcpu_count": config.vcpu_count,
+        });
+        fs::write(
+            metadata_path,
+            serde_json::to_string_pretty(&metadata)
+                .map_err(|error| LiteDroidError::ConfigError(error.to_string()))?,
+        )?;
+        Ok(config)
+    }
+
     /// Download and install the official Android SDK system image required by LiteDroid.
     pub fn ensure_android_images(&self, api_level: u32) -> Result<()> {
         let images_dir = self.images_dir();

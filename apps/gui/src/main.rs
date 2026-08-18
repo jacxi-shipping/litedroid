@@ -98,6 +98,7 @@ impl LiteDroidApp {
 
     fn refresh(&mut self) {
         let config = litedroid_config::LiteDroidConfig::load().unwrap_or_default();
+        let _ = config.ensure_default_device();
         self.devices.clear();
         if let Ok(entries) = std::fs::read_dir(config.devices_dir()) {
             for entry in entries.flatten() {
@@ -127,7 +128,11 @@ impl LiteDroidApp {
                 });
             }
         }
-        if !self.devices.iter().any(|device| device.name == self.selected_device) {
+        if !self
+            .devices
+            .iter()
+            .any(|device| device.name == self.selected_device)
+        {
             if let Some(device) = self.devices.first() {
                 self.selected_device = device.name.clone();
             }
