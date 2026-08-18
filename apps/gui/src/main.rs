@@ -102,6 +102,11 @@ impl LiteDroidApp {
                 });
             }
         }
+        if !self.devices.iter().any(|device| device.name == self.selected_device) {
+            if let Some(device) = self.devices.first() {
+                self.selected_device = device.name.clone();
+            }
+        }
         if let Some(status) = self.ipc_call("device.status", serde_json::json!({})) {
             self.power_state = status
                 .get("power_state")
