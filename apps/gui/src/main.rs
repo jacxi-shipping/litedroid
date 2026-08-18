@@ -3,6 +3,7 @@
 use eframe::egui;
 use litedroid_core::DAEMON_SOCKET_PATH;
 use serde_json::Value;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const IPC_SOCK: &str = DAEMON_SOCKET_PATH;
@@ -25,10 +26,12 @@ struct LiteDroidApp {
     status_message: String,
     last_refresh: Instant,
     rendering_mode: String,
+    auto_start_attempted: bool,
 }
 
 impl Default for LiteDroidApp {
     fn default() -> Self {
+        Self::ensure_daemon();
         let mut app = Self {
             devices: Vec::new(),
             selected_device: "default".to_string(),
@@ -39,6 +42,7 @@ impl Default for LiteDroidApp {
             status_message: "Ready".to_string(),
             last_refresh: Instant::now() - Duration::from_secs(10),
             rendering_mode: rendering_mode(),
+            auto_start_attempted: false,
         };
         app.refresh();
         app
@@ -46,6 +50,27 @@ impl Default for LiteDroidApp {
 }
 
 impl LiteDroidApp {
+    fn ensure_daemon() {
+        if litedroid_ipc::IpcClient::connect(IPC_SOCK).is_ok() {
+            return;
+        }
+        let Ok(executable) = std::env::current_exe() else {
+            return;
+        };
+        let Some(directory) = executable.parent() else {
+            return;
+        };
+        let daemon = directory.join("litedroid-daemon");
+        if !daemon.is_file() {
+            return;
+        }
+        let _ = Command::new(daemon)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+
     fn ipc_call(&mut self, method: &str, params: Value) -> Option<Value> {
         let mut client = match litedroid_ipc::IpcClient::connect(IPC_SOCK) {
             Ok(client) => client,
@@ -113,6 +138,18 @@ impl LiteDroidApp {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_string();
+        }
+        if self.daemon_online && !self.devices.is_empty() && !self.auto_start_attempted {
+            self.auto_start_attempted = true;
+            if self
+                .ipc_call(
+                    "device.start",
+                    serde_json::json!({"device": self.selected_device.clone()}),
+                )
+                .is_some()
+            {
+                self.status_message = "Starting Android emulator".to_string();
+            }
         }
         self.last_refresh = Instant::now();
     }

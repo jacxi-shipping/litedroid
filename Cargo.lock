@@ -1995,6 +1995,7 @@ name = "litedroid-daemon"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dirs",
  "libc",
  "litedroid-config",
  "litedroid-core",

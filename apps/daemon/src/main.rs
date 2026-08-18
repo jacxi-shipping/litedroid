@@ -6,6 +6,8 @@ use litedroid_core::*;
 use litedroid_ipc::{IpcRequest, IpcResponse, IpcServer, IpcStream};
 use parking_lot::Mutex;
 use serde_json::json;
+use std::io::Write as _;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -21,6 +23,7 @@ struct DaemonState {
     active_device: Option<String>,
     power_state: String,
     stop_handle: Option<Arc<AtomicBool>>,
+    emulator: Option<Child>,
 }
 
 fn handle_request(stream: &mut IpcStream, state: &Arc<Mutex<DaemonState>>, _pid: u32) {
@@ -66,8 +69,11 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
                 .get("device")
                 .and_then(|v| v.as_str())
                 .unwrap_or("default");
-            if st.stop_handle.is_some() {
-                return make_err("VM is already running");
+            if let Some(emulator) = st.emulator.as_mut() {
+                if emulator.try_wait().ok().flatten().is_none() {
+                    return make_err("Android emulator is already running");
+                }
+                st.emulator = None;
             }
             let config = match LiteDroidConfig::load() {
                 Ok(config) => config,
@@ -82,69 +88,37 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
             if let Err(error) = config.ensure_android_images(vm_config.api_level) {
                 return make_err(&format!("Android images are unavailable: {error}"));
             }
-            if !vm_config.kernel_path.is_file()
-                || std::fs::metadata(&vm_config.kernel_path)
-                    .map(|m| m.len() == 0)
-                    .unwrap_or(true)
-            {
-                return make_err(&format!(
-                    "Kernel image not found: {}",
-                    vm_config.kernel_path.display()
-                ));
-            }
-            if !vm_config.initramfs_path.is_file()
-                || std::fs::metadata(&vm_config.initramfs_path)
-                    .map(|m| m.len() == 0)
-                    .unwrap_or(true)
-            {
-                return make_err(&format!(
-                    "Initramfs image not found: {}",
-                    vm_config.initramfs_path.display()
-                ));
-            }
-            if !vm_config.system_image_path.is_file()
-                || std::fs::metadata(&vm_config.system_image_path)
-                    .map(|m| m.len() == 0)
-                    .unwrap_or(true)
-            {
-                return make_err(&format!(
-                    "Android system image not found: {}",
-                    vm_config.system_image_path.display()
-                ));
-            }
-            let mut vm = match litedroid_vmm::VirtualMachine::new(&vm_config) {
-                Ok(vm) => vm,
-                Err(error) => return make_err(&format!("VM creation failed: {error}")),
+            let emulator = match android_emulator(&config) {
+                Ok(path) => path,
+                Err(error) => return make_err(&error),
             };
-            if let Err(error) = vm
-                .load_kernel(&vm_config.kernel_path)
-                .and_then(|_| vm.load_initramfs(&vm_config.initramfs_path))
-                .and_then(|_| vm.setup_boot())
+            let avd_name = format!("LiteDroid-API{}", vm_config.api_level);
+            let child = match Command::new(emulator)
+                .args([
+                    "-avd",
+                    &avd_name,
+                    "-gpu",
+                    "swiftshader_indirect",
+                    "-no-metrics",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
             {
-                return make_err(&format!("Guest boot setup failed: {error}"));
-            }
-            let stop_handle = vm.stop_handle();
-            let thread_state = state.clone();
-            thread::spawn(move || {
-                let result = vm.run();
-                let mut state = thread_state.lock();
-                state.stop_handle = None;
-                state.active_device = None;
-                state.power_state = if result.is_ok() {
-                    "off".to_string()
-                } else {
-                    "error".to_string()
-                };
-                if let Err(error) = result {
-                    tracing::error!("VM exited with error: {error}");
-                }
-            });
+                Ok(child) => child,
+                Err(error) => return make_err(&format!("Cannot start Android emulator: {error}")),
+            };
             st.active_device = Some(device_name.to_string());
-            st.power_state = "running".to_string();
-            st.stop_handle = Some(stop_handle);
-            make_ok(json!({"device": device_name, "status": "running"}))
+            st.power_state = "booting".to_string();
+            st.emulator = Some(child);
+            make_ok(json!({"device": device_name, "status": "booting", "avd": avd_name}))
         }
         "device.stop" => {
+            if let Some(mut emulator) = st.emulator.take() {
+                let _ = emulator.kill();
+                let _ = emulator.wait();
+            }
             if let Some(stop_handle) = st.stop_handle.take() {
                 stop_handle.store(false, Ordering::SeqCst);
             }
@@ -156,7 +130,7 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
         "device.pause" => make_err("Pause is not implemented for the active VM"),
         "device.resume" => make_err("Resume is not implemented for the active VM"),
         "device.status" => make_ok(json!({
-            "power_state": st.power_state,
+            "power_state": emulator_state(&mut st),
             "device": st.active_device,
         })),
         "device.launch" => make_err("Device not running"),
@@ -180,6 +154,86 @@ fn dispatch(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcResponse {
         "snapshot.delete" => make_err("No active VM"),
         _ => make_err(&format!("Unknown method: {}", req.method)),
     }
+}
+
+fn android_emulator(config: &LiteDroidConfig) -> std::result::Result<std::path::PathBuf, String> {
+    let sdk_root = std::env::var_os("ANDROID_SDK_ROOT")
+        .or_else(|| std::env::var_os("ANDROID_HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config.data_dir().join("android-sdk"));
+    let emulator = sdk_root.join("emulator").join("emulator");
+    let avdmanager = sdk_root
+        .join("cmdline-tools")
+        .join("latest")
+        .join("bin")
+        .join("avdmanager");
+    if !emulator.is_file() || !avdmanager.is_file() {
+        return Err(format!(
+            "Android Emulator tools are not installed under {}. Run scripts/linux/setup.sh first.",
+            sdk_root.display()
+        ));
+    }
+    let avd_name = "LiteDroid-API34";
+    let avd_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".android")
+        .join("avd")
+        .join(format!("{avd_name}.avd"));
+    if !avd_dir.is_dir() {
+        let mut create = Command::new(avdmanager)
+            .args([
+                "create",
+                "avd",
+                "--force",
+                "--name",
+                avd_name,
+                "--package",
+                "system-images;android-34;default;x86_64",
+                "--device",
+                "pixel_5",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("Cannot start avdmanager: {error}"))?;
+        if let Some(mut stdin) = create.stdin.take() {
+            stdin
+                .write_all(b"no\n")
+                .map_err(|error| format!("Cannot configure Android AVD: {error}"))?;
+        }
+        let output = create
+            .wait_with_output()
+            .map_err(|error| format!("Cannot create Android AVD: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "Cannot create Android AVD: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    Ok(emulator)
+}
+
+fn emulator_state(state: &mut DaemonState) -> String {
+    if let Some(emulator) = state.emulator.as_mut() {
+        match emulator.try_wait() {
+            Ok(None) => {
+                state.power_state = "running".to_string();
+            }
+            Ok(Some(status)) => {
+                state.emulator = None;
+                state.active_device = None;
+                state.power_state = if status.success() {
+                    "off".to_string()
+                } else {
+                    "error".to_string()
+                };
+            }
+            Err(_) => state.power_state = "error".to_string(),
+        }
+    }
+    state.power_state.clone()
 }
 
 fn main() {
@@ -255,6 +309,7 @@ fn main() {
         active_device: None,
         power_state: "off".to_string(),
         stop_handle: None,
+        emulator: None,
     }));
 
     // Accept loop

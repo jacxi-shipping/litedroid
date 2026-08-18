@@ -34,7 +34,9 @@ case "$PKG_MANAGER" in
     apt-get)
         sudo apt-get update
         $PKG_INSTALL build-essential libx11-dev pkg-config libpulse-dev \
-            libasound2-dev iptables
+            libasound2-dev iptables curl unzip openjdk-17-jre-headless \
+            libpulse0 libxkbfile1 libxcb-cursor0 libxkbcommon-x11-0 \
+            libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xkb1 libsm6 libice6
         ;;
     dnf)
         $PKG_INSTALL gcc make libX11-devel pulseaudio-libs-devel \
@@ -46,7 +48,40 @@ case "$PKG_MANAGER" in
 esac
 echo -e "${GREEN}[OK]${NC} System dependencies installed"
 
-# ── 3. Install Rust ────────────────────────────────────────────────
+# ── 3. Android SDK and bootable AVD ─────────────────────────────────
+echo ""
+SDK_ROOT="$HOME/.local/share/litedroid/android-sdk"
+SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+AVDMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/avdmanager"
+if [ ! -x "$SDKMANAGER" ]; then
+    echo "Installing Android SDK command-line tools..."
+    mkdir -p "$SDK_ROOT/cmdline-tools"
+    temp_dir=$(mktemp -d)
+    trap 'rm -rf "$temp_dir"' EXIT
+    curl --fail --location --retry 3 \
+        --output "$temp_dir/tools.zip" \
+        https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+    unzip -q "$temp_dir/tools.zip" -d "$temp_dir"
+    rm -rf "$SDK_ROOT/cmdline-tools/latest"
+    mv "$temp_dir/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+fi
+
+export ANDROID_HOME="$SDK_ROOT"
+export ANDROID_SDK_ROOT="$SDK_ROOT"
+export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$SDK_ROOT/platform-tools:$SDK_ROOT/emulator:$PATH"
+echo "Installing Android Emulator and API 34 x86_64 system image..."
+yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null
+"$SDKMANAGER" --sdk_root="$SDK_ROOT" \
+    "platform-tools" "emulator" "system-images;android-34;default;x86_64"
+if [ ! -d "$HOME/.android/avd/LiteDroid-API34.avd" ]; then
+    printf 'no\n' | "$AVDMANAGER" create avd --force \
+        --name LiteDroid-API34 \
+        --package "system-images;android-34;default;x86_64" \
+        --device pixel_5
+fi
+echo -e "${GREEN}[OK]${NC} Android SDK and LiteDroid-API34 AVD installed"
+
+# ── 4. Install Rust ────────────────────────────────────────────────
 echo ""
 if command -v rustc &>/dev/null; then
     RUST_VERSION=$(rustc --version)
@@ -58,7 +93,7 @@ else
     echo -e "${GREEN}[OK]${NC} Rust installed: $(rustc --version)"
 fi
 
-# ── 4. Check KVM ───────────────────────────────────────────────────
+# ── 5. Check KVM ───────────────────────────────────────────────────
 echo ""
 if [ -e /dev/kvm ] && [ -w /dev/kvm ]; then
     echo -e "${GREEN}[OK]${NC} /dev/kvm is available"
@@ -73,7 +108,7 @@ else
     echo "  The project will still build; KVM is only needed at runtime."
 fi
 
-# ── 5. Build ───────────────────────────────────────────────────────
+# ── 6. Build ───────────────────────────────────────────────────────
 echo ""
 echo "Building LiteDroid (release)..."
 source "$HOME/.cargo/env"
@@ -88,6 +123,6 @@ ls -lh target/release/litedroid target/release/litedroid-daemon target/release/l
     || echo "  (binaries not found in target/release/)"
 echo ""
 echo "Quick start:"
-echo "  ./target/release/litedroid doctor   # check system readiness"
-echo "  ./target/release/litedroid device create PixelLite"
-echo "  ./target/release/litedroid start --device PixelLite"
+echo "  ./target/release/litedroid device create LiteDroid"
+echo "  ./target/release/litedroid-daemon &"
+echo "  ./target/release/litedroid-gui"
