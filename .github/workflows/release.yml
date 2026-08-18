@@ -1,0 +1,88 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Linux release
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libegl1-mesa-dev libgl1-mesa-dev libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binaries
+        run: cargo build --workspace --release
+
+      - name: Package release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          staging="litedroid-${version}-linux-x86_64"
+          mkdir -p "$staging/bin" "$staging/scripts"
+          install -m 0755 target/release/litedroid "$staging/bin/litedroid"
+          install -m 0755 target/release/litedroid-daemon "$staging/bin/litedroid-daemon"
+          install -m 0755 target/release/litedroid-gui "$staging/bin/litedroid-gui"
+          cp -R scripts/linux/. "$staging/scripts/"
+          cp Cargo.toml Cargo.lock "$staging/"
+          tar -czf "${staging}.tar.gz" "$staging"
+          sha256sum "${staging}.tar.gz" > "${staging}.tar.gz.sha256"
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: litedroid-linux-x86_64
+          path: |
+            litedroid-*.tar.gz
+            litedroid-*.sha256
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download release package
+        uses: actions/download-artifact@v4
+        with:
+          name: litedroid-linux-x86_64
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" litedroid-*.tar.gz litedroid-*.sha256 \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "LiteDroid ${GITHUB_REF_NAME}" \
+            --generate-notes
